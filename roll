@@ -1,0 +1,379 @@
+#!/usr/bin/perl
+
+# roll
+
+# This script gathers data to present to selected forecasting models.
+# It gathers the forecasting results and updates the database.
+
+# Note: To determine earliest history, it may be worthwhile having a starting
+# point closer to the most current history. In this case, the query would be
+# adjusted to allow something like:
+# select src_id,dst_id,count(*) tot from archive_$measure where time>$start group by src_id,dst_id having tot=$base;
+
+# Note: roll does not set archive_$measure.new=0 after completion. It is the responsibility of its wrapper.
+
+# TODO
+# - Using debug, results from R show 4 cycles of predictions, each of 10 forecasts. Each forecast in a cycle is the same.
+#   Each cycle runs from 11 to 20. This has been checked before but I do not recall the results. Shouldn't the first
+#   cycle go from 11-20, the second from 12-21, etc.? And shouldn't there be variations in the forecasts?
+#   Also check: Missing values encountered. Using longest contiguous portion of time series
+# - Settle on localtime or gmtime and whether block should return 0 for byTime.
+# - Switch --measure to --archive? Or switch --archive to --measure elsewhere? Or leave as is?
+
+# Usage:
+# ./env.sh ./roll --db DummyDB --base 10 --cycles 4 --cols 2 --measure throughput --model ets --group byTime --catchup
+# ./env.sh ./roll --db DummyDB --base 10 --cycles 4 --cols 2 --measure throughput --model ets --group byHour --catchup
+
+
+use strict;
+use warnings;
+
+use Getopt::Long qw(:config bundling);
+use DBI;
+
+use Environment;
+use SQL;
+use Model;
+
+$| = 1;
+
+# Handling of command line options
+my %opt=();
+GetOptions( \%opt, "db=s",
+                   "base=i",
+                   "cols=i",
+                   "cycles=i",
+                   "catchuponly" => \$opt{catchuponly},
+                   "catchup"     => \$opt{catchup},
+                   "debug"       => \$opt{debug},
+                   "group=s",
+                   "measure=s",
+                   "model=s" );
+
+# Globals (See also Environment library)
+my $db      = $opt{db} || $DB_NAME;
+my $base    = $opt{base};
+my $cols    = $opt{cols};
+my $cycles  = $opt{cycles};
+my $group   = $opt{group};
+my $measure = $opt{measure};
+my $model   = $opt{model};
+
+my %lhistory = ();
+my %ehistory = ();
+my %chistory = ();
+
+my $forecast_model = $model . '_' . $measure . '_' . $group;
+my $forecast_map   = $forecast_model . '_map';
+my $block_str = undef;
+my $time_block = undef;
+
+my $fcast;
+my $ltime;
+my $count;
+
+my $mark  = undef;        # To benchmark procedures
+my $smark = time;
+my $tmark = undef;
+my $date  = `date`;
+print "Start: $date\n";
+
+# Access database
+my $dbh = DBI->connect("dbi:mysql:dbname=$db","$DB_USER","$DB_PASSWD",
+                       { AutoCommit => 1, PrintError => 1, RaiseError => 1 });
+
+# Identify what block string and time block to use given a particular group
+my $bh = $dbh->prepare( get_block_str() );
+$bh->execute($group);
+while( my $row = $bh->fetchrow_hashref() ) {
+    $block_str = $row->{block_str};
+    $time_block = $row->{time_block};
+}
+
+# Other prepare statements
+my $ih  = $dbh->prepare( insert_prediction($forecast_model) );
+my $dh  = $dbh->prepare( delete_old_forecasts($forecast_model) );
+my $dch = $dbh->prepare( drop_path_counts() );
+my $dnh = $dbh->prepare( drop_path_new_entries() );
+my $dlh = $dbh->prepare( drop_path_latest_entries() );
+my $deh = $dbh->prepare( drop_path_base_counts() );
+my $dwh = $dbh->prepare( drop_edges_wo_new_entries() );
+my $d0h = $dbh->prepare( drop_null_counts() );
+my $dgh = $dbh->prepare( drop_edges_not_done() );
+my $pch = $dbh->prepare( get_path_counts($block_str,$measure,$base) );
+my $p0h = $dbh->prepare( get_null_counts($block_str,$measure,$forecast_map,$forecast_model,$base) );
+my $pnh = $dbh->prepare( get_edges_with_new_entries($block_str,$measure) );
+my $plh = $dbh->prepare( get_latest_path_times($block_str,$measure,$forecast_map,$forecast_model) );
+my $peh = $dbh->prepare( get_path_base_counts($block_str,$measure,$base) );
+my $pwh = $dbh->prepare( get_edges_wo_new_entries($block_str,$measure) );
+my $pgh = $dbh->prepare( get_edges_not_done($block_str,$measure) );
+my $lh  = $dbh->prepare( get_latest_history($measure,$base,$cols,$block_str) );
+my $eh  = $dbh->prepare( get_earliest_history($measure,$forecast_model,$base,$cols,$block_str) );
+my $uh  = $dbh->prepare( get_unmapped_edges() );
+my $ch  = $dbh->prepare( get_catchup_history($measure,$base,$cols,$block_str) );
+my $fh  = $dbh->prepare( get_fcast($forecast_model) );
+my $mh  = $dbh->prepare( insert_map($forecast_map) );
+my $th  = $dbh->prepare( get_new_measure_records($measure,$block_str) );
+my $ufh = $dbh->prepare( update_fcast($forecast_model) );
+
+# Initiate gathering of data
+$dch->execute(); $dnh->execute(); $dlh->execute(); $deh->execute(); $dwh->execute();
+$d0h->execute(); $dgh->execute();
+
+$mark = time;
+$pch->execute();
+$mark = time - $mark;
+print "  Count of records by path-block   -> search time: $mark sec.\n";
+
+$mark = time;
+$p0h->execute();
+$mark = time - $mark;
+print "  Count of records with no mapping -> search time: $mark sec.\n";
+
+$mark = time;
+$pnh->execute();
+$mark = time - $mark;
+print "  Count of edges with new entries  -> search time: $mark sec.\n";
+
+$mark = time;
+$plh->execute();
+$mark = time - $mark;
+print "  Latest path times                -> search time: $mark sec.\n";
+
+$mark = time;
+$peh->execute();
+$mark = time - $mark;
+print "  First forecast candidates        -> search time: $mark sec.\n";
+
+$mark = time;
+$pwh->execute();
+$mark = time - $mark;
+print "  Edges without new entries        -> search time: $mark sec.\n";
+
+$mark = time;
+$pgh->execute();
+$mark = time - $mark;
+print "  Edges not done                   -> search time: $mark sec.\n";
+
+
+# Generate an R object
+my $R = Statistics::R->new();
+
+
+# This case searches for new records to process.
+if ( !$opt{catchuponly} ) {
+    # Gather data for edges with more than $base records
+    print "Processing edges with more than $base records and with new entries.\n";
+    $mark = time;
+    $lh->execute();
+    $mark = time - $mark;
+    print "   -> search time: $mark sec.\n";
+    $fcast = undef;
+    $ltime = undef;
+    $count=0;
+    $mark = time;
+    while( my $row = $lh->fetchrow_hashref() ) {
+        my $key = $row->{src_id} . ':' . $row->{dst_id} . ':' . $row->{block};
+        $lhistory{$key} = $row->{most_recent_time_measure_pairs};
+    
+        # Delete old forecast records, if any
+        $dh->execute($row->{src_id},$row->{dst_id},$row->{block});
+    
+        # Generate forecasts
+        printf("%-11.11s  ", $key);
+        ($ltime, $fcast) = model($R,$model,$base,$cycles,$lhistory{$key});
+        print "$ltime  $fcast\n";
+        my $timeblock = block($ltime);
+    
+        # Store forecasts
+        my @fcast = split(',', $fcast);
+        my $seq = 1;
+        foreach my $fcast (@fcast) {
+            $ih->execute($fcast,$row->{src_id},$row->{dst_id},$ltime,$timeblock,1,$base,$seq);
+            $seq++;
+        }
+    
+        # Audit data
+        #print "> audit($row->{src_id},$row->{dst_id},$measure,$model,$group,$row->{block});\n";
+        audit($row->{src_id},$row->{dst_id},$measure,$model,$group,$row->{block});
+    
+        $count++;
+    }
+    $mark = time - $mark;
+    print "\n + Count: $count  ->  forecast insert time: $mark sec.\n\n";
+    
+    # Gather data for edges with exactly $base records
+    print "Processing edges with exactly $base records and with new entries, and edges never started.\n";
+    $mark = time;
+    $eh->execute();
+    $mark = time - $mark;
+    print "   -> search time: $mark sec.\n";
+    $fcast = undef;
+    $ltime = undef;
+    $count=0;
+    $mark = time;
+    while( my $row = $eh->fetchrow_hashref() ) {
+        my $key = $row->{src_id} . ':' . $row->{dst_id} . ':' . $row->{block};
+        $ehistory{$key} = $row->{earliest_time_measure_pairs};
+    
+        # Delete old forecast records, if any
+        $dh->execute($row->{src_id},$row->{dst_id},$row->{block});
+    
+        # Generate forecasts
+        printf("%-11.11s  ", $key);
+        ($ltime, $fcast) = model($R,$model,$base,$cycles,$ehistory{$key});
+        print "$ltime  $fcast\n";
+        my $timeblock = block($ltime);
+    
+        # Store forecasts
+        my @fcast = split(',', $fcast);
+        my $seq = 1;
+        foreach my $fcast (@fcast) {
+            $ih->execute($fcast,$row->{src_id},$row->{dst_id},$ltime,$timeblock,1,$base,$seq);
+            $seq++;
+        }
+    
+        $count++;
+    }
+    $mark = time - $mark;
+    print "\n = Count: $count  ->  forecast insert time: $mark sec.\n\n";
+
+    # Gather edges to kick-start
+    print "Processing edges to be mapped for the first time.\n";
+    $mark = time;
+    $uh->execute();
+    $mark = time - $mark;
+    print "   -> search time: $mark sec.\n";
+    $count=0;
+    $mark = time;
+    while( my $row = $uh->fetchrow_hashref() ) {
+        print "$row->{src_id}:$row->{dst_id}:$row->{block}\n";
+        #print "audit($row->{src_id},$row->{dst_id},$measure,$model,$group,$row->{block});\n";
+        audit($row->{src_id},$row->{dst_id},$measure,$model,$group,$row->{block});
+        $count++;
+    }
+    $mark = time - $mark;
+    print "\n k Count: $count  ->  forecast insert time: $mark sec.\n\n";
+}
+
+# This case handles any stragglers that need catching up.
+if ( $opt{catchup} || $opt{catchuponly} ) {
+    # Gather data for edges with unprocessed history
+    print "Processing catch-up records.\n";
+    $mark = time;
+    $ch->execute();
+    $mark = time - $mark;
+    print "   -> search time: $mark sec.\n";
+    $fcast = undef;
+    $ltime = undef;
+    $count=0;
+    $mark = time;
+    while( my $row = $ch->fetchrow_hashref() ) {
+        my $key = $row->{src_id} . ':' . $row->{dst_id} . ':' . $row->{block};
+        $chistory{$key} = $row->{catchup_time_measure_pairs};
+    
+        # Delete old forecast records, if any
+        $dh->execute($row->{src_id},$row->{dst_id},$row->{block});
+    
+        # Generate forecasts
+        printf("%-11.11s  ", $key);
+        ($ltime, $fcast) = model($R,$model,$base,$cycles,$chistory{$key});
+        print "$ltime\t$fcast\n";
+        my $timeblock = block($ltime);
+    
+        # Store forecasts
+        my @fcast = split(',', $fcast);
+        my $seq = 1;
+        foreach my $fcast (@fcast) {
+            $ih->execute($fcast,$row->{src_id},$row->{dst_id},$ltime,$timeblock,1,$base,$seq);
+            $seq++;
+        }
+    
+        # Audit data
+        #print "c  audit($row->{src_id},$row->{dst_id},$measure,$model,$group,$row->{block});\n";
+        audit($row->{src_id},$row->{dst_id},$measure,$model,$group,$row->{block});
+
+        $count++;
+    }
+    $mark = time - $mark;
+    print "\n c Count: $count  ->  forecast insert time: $mark sec.\n\n";
+}
+
+$date = `date`;
+print "End: $date\n";
+$tmark = time - $smark;
+print "Total roll execution time: $tmark sec.\n\n";
+print "________________________________________________________________________________\n\n";
+
+
+# End execution
+$bh->finish();  $ih->finish();  $dh->finish();  $dch->finish(); $dnh->finish();
+$dlh->finish(); $deh->finish(); $dwh->finish(); $d0h->finish(); $dgh->finish();
+$pch->finish(); $p0h->finish(); $pnh->finish(); $plh->finish(); $peh->finish();
+$pwh->finish(); $pgh->finish(); $lh->finish();  $eh->finish();  $uh->finish();
+$ch->finish();  $fh->finish();  $mh->finish();  $th->finish();  $ufh->finish();
+$dbh->disconnect();
+exit(0);
+
+
+# ---
+
+# This function maps recorded measurements to their associated forecasts
+sub audit {
+    my ($src_id,$dst_id,$measure,$model,$group,$block) = @_;
+
+    # Get new forecast records
+    my %fcast_id = ();
+    my $fcount = 0;
+    my $ltime = undef;
+
+    $fh->execute($src_id,$dst_id,$block);
+    while( my $row = $fh->fetchrow_hashref() ) {
+        $ltime = $row->{last_time};
+        $fcount++;
+        $fcast_id{$fcount} = $row->{id};
+    }
+
+    if ( $fcount ) {
+        # Get recent history
+        my %tput_id = ();
+        my $tcount = 0;
+        $th->execute($src_id,$dst_id,$ltime,$block);
+        while( my $row = $th->fetchrow_hashref() ) {
+            $tcount++;
+            $tput_id{$tcount} = $row->{id};
+        }
+        
+        # Reconcile history by updating the history-forecast mapping
+        my $max = 0;
+        if ( $fcount < $tcount ) {
+            $max = $fcount;
+        } else {
+            $max = $tcount;
+        }
+        for ( my $i=1;$i<=$max;$i++ ) {
+            # $tput_id{$i} has the last_time record, so map the next
+            # record, $tput_id{$i+1}, to $fcast_id{$i}
+            $mh->execute( $tput_id{$i+1}, $fcast_id{$i} );
+            # Update the forecast table new and last_time fields for records added to the mapping
+            $ufh->execute($fcast_id{$i});
+        }
+    } else {
+        # Do nothing. No records to process.
+    }
+
+}
+
+
+# This function returns the time element desired based
+# on the given raw time and time block. For example, if
+# $time_block=2, the hour of the raw time is returned.
+sub block {
+    my ($time) = @_;
+
+    if ( $time_block == 0 ) {
+        return 0;
+    } else {
+        return (localtime $time)[$time_block];
+    }
+}
