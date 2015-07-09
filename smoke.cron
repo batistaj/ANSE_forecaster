@@ -1,0 +1,12 @@
+# Note: Keep this cron in sync with psum02:/etc/cron.d/update_madDev
+
+# Rotate logs
+44 * * * * root /root/madness_dev/bin/env.sh /root/madness_dev/bin/rotate_smoked_logs  > /root/madness_dev/logs/rotate_smoked_logs.log 2>&1
+
+# Smoke it!
+45 * * * * root /root/madness_dev/bin/env.sh /root/madness_dev/bin/smoke --db madCow --archive throughput --base 10 --cycles 4 --cols 2 --catchup  > /root/madness_dev/logs/smokeit.log 2>&1
+#15 * * * * root /root/madness_dev/bin/env.sh /root/madness_dev/bin/smoke --db madCow --archive throughput --base 10 --cycles 4 --cols 2 --catchuponly  >> /root/madness_dev/logs/smokeit.log 2>&1
+
+# Optimize, backup, and compress DB
+#50 03 * * 6 root /root/madness_dev/bin/env.sh /root/madness_dev/bin/optimizeDB > /root/madness_dev/logs/optimizeDB.log 2>&1
+#45 * * * * root /root/madness_dev/bin/env.sh /root/madness_dev/bin/optimizeDB > /root/madness_dev/logs/optimizeDB.log 2>&1
