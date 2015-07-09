@@ -1,0 +1,162 @@
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `archive_throughput` (
+  `id` int(10) unsigned NOT NULL,
+  `time` int(10) unsigned NOT NULL,
+  `mon_id` smallint(5) unsigned NOT NULL,
+  `src_id` smallint(5) unsigned NOT NULL,
+  `dst_id` smallint(5) unsigned NOT NULL,
+  `measure` float unsigned DEFAULT NULL,
+  `mkey` varchar(50) NOT NULL,
+  `new` tinyint(3) unsigned DEFAULT '0',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `measidx` (`time`,`mon_id`,`src_id`,`dst_id`,`mkey`),
+  KEY `tidx` (`time`),
+  KEY `sidx` (`src_id`),
+  KEY `didx` (`dst_id`),
+  KEY `kidx` (`mkey`)
+);
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `archives_registry` (
+  `id` tinyint(3) unsigned NOT NULL,
+  `archive_name` varchar(20) NOT NULL,
+  `status_id` tinyint(3) unsigned NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `archive_idx` (`archive_name`)
+);
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `edges` (
+  `id` int(10) unsigned NOT NULL,
+  `src_id` smallint(5) unsigned NOT NULL,
+  `dst_id` smallint(5) unsigned NOT NULL,
+  `archive_id` tinyint(3) unsigned NOT NULL,
+  `status_id` tinyint(3) unsigned NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `pidx` (`src_id`,`dst_id`,`archive_id`,`status_id`)
+);
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `ets_throughput_byHour` (
+  `id` int(10) unsigned NOT NULL,
+  `fcast` float unsigned DEFAULT NULL,
+  `src_id` smallint(5) unsigned NOT NULL,
+  `dst_id` smallint(5) unsigned NOT NULL,
+  `last_time` int(10) unsigned DEFAULT NULL,
+  `grouping` tinyint(3) unsigned DEFAULT NULL,
+  `new` tinyint(3) unsigned DEFAULT NULL,
+  `base` tinyint(3) unsigned DEFAULT NULL,
+  `sequence` tinyint(3) unsigned DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `sid` (`src_id`),
+  KEY `did` (`dst_id`),
+  KEY `gid` (`grouping`),
+  KEY `nidx` (`new`)
+);
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `ets_throughput_byHour_map` (
+  `id` int(10) unsigned NOT NULL,
+  `archive_id` int(10) unsigned NOT NULL,
+  `model_id` int(10) unsigned NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `mapidx` (`archive_id`,`model_id`),
+  KEY `aidx` (`archive_id`),
+  KEY `midx` (`model_id`)
+);
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `ets_throughput_byTime` (
+  `id` int(10) unsigned NOT NULL,
+  `fcast` float unsigned DEFAULT NULL,
+  `src_id` smallint(5) unsigned NOT NULL,
+  `dst_id` smallint(5) unsigned NOT NULL,
+  `last_time` int(10) unsigned DEFAULT NULL,
+  `grouping` tinyint(3) unsigned DEFAULT NULL,
+  `new` tinyint(3) unsigned DEFAULT NULL,
+  `base` tinyint(3) unsigned DEFAULT NULL,
+  `sequence` tinyint(3) unsigned DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `sid` (`src_id`),
+  KEY `did` (`dst_id`),
+  KEY `gid` (`grouping`),
+  KEY `nidx` (`new`)
+);
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `ets_throughput_byTime_map` (
+  `id` int(10) unsigned NOT NULL,
+  `archive_id` int(10) unsigned NOT NULL,
+  `model_id` int(10) unsigned NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `mapidx` (`archive_id`,`model_id`),
+  KEY `aidx` (`archive_id`),
+  KEY `midx` (`model_id`)
+);
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `groups_registry` (
+  `id` tinyint(3) unsigned NOT NULL,
+  `group_name` varchar(20) NOT NULL,
+  `clause` varchar(40) NOT NULL,
+  `time_block` tinyint(3) unsigned NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `gidx` (`group_name`)
+);
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `models_registry` (
+  `id` tinyint(3) unsigned NOT NULL,
+  `model_name` varchar(20) NOT NULL,
+  `archive_id` tinyint(3) unsigned NOT NULL,
+  `group_id` tinyint(3) unsigned NOT NULL,
+  `status_id` tinyint(3) unsigned NOT NULL,
+  `ranking` tinyint(3) unsigned NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `model_idx` (`model_name`,`archive_id`,`group_id`)
+);
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `nodes` (
+  `id` int(10) unsigned NOT NULL,
+  `node_ip` varchar(50) NOT NULL,
+  `node_name` varchar(50) DEFAULT NULL,
+  `archive_id` tinyint(3) unsigned NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `nidx` (`node_ip`,`archive_id`)
+);
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `staging_throughput` (
+  `id` int(10) unsigned NOT NULL,
+  `time` int(10) unsigned NOT NULL,
+  `mon_ip` varchar(50) NOT NULL,
+  `src_ip` varchar(50) NOT NULL,
+  `dst_ip` varchar(50) NOT NULL,
+  `measure` float unsigned DEFAULT NULL,
+  `mkey` varchar(50) NOT NULL,
+  `new` tinyint(3) unsigned DEFAULT '1',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `sidx` (`time`,`mon_ip`,`src_ip`,`dst_ip`,`mkey`)
+);
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `status` (
+  `id` tinyint(3) unsigned NOT NULL,
+  `status` varchar(15) NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `sidx` (`status`)
+);
+/*!40101 SET character_set_client = @saved_cs_client */;
