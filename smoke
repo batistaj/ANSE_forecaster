@@ -1,0 +1,88 @@
+#!/usr/bin/perl
+
+# This script is a wrapper for the cron process
+
+# Usage:
+# ./env.sh ./smoke --db DummyDB --archive throughput --base 10 --cycles 4 --cols 2
+# ./env.sh ./smoke --db DummyDB --archive throughput --base 10 --cycles 4 --cols 2 --catchup
+# ./env.sh ./smoke --db DummyDB --archive throughput --base 10 --cycles 4 --cols 2 --catchuponly
+
+# TODO
+# - Check that all scripts have a proper reference to the db, as needed.
+#   In fact, since the db is specified in env.sh, it need not be a parameter (make it optional)
+# - Set smoke to start earlier with load going into a loop, checking for the needed archive.
+# - Load the archive with the proper timestamp.
+# - Connect to the database and add an archive load tracking process.
+
+use strict;
+use warnings;
+
+use Getopt::Long qw(:config bundling);
+use Environment;
+
+$| = 1;
+
+# Handling of command line options
+my %opt=();
+GetOptions( \%opt, "db=s",
+                   "archive=s",
+                   "base=i",
+                   "cycles=i",
+                   "cols=i",
+                   "catchuponly" => \$opt{catchuponly},
+                   "catchup"     => \$opt{catchup} );
+
+# Globals (See also Environment library)
+my $db         = $opt{db} || $DB_NAME;
+my $archive    = $opt{archive};
+my $base       = $opt{base};
+my $cols       = $opt{cols};
+my $cycles     = $opt{cycles};
+my $measure    = undef;
+my $group_name = undef;
+my $history    = '';
+
+$history = '--catchuponly' if ( $opt{catchuponly} );
+$history = '--catchup'     if ( $opt{catchup} );
+
+my $results=undef;
+
+# Execute scripts
+if ( !$opt{catchuponly} ) {  # i.e., either --catchup or no history parameter given.
+    #$results = "$FORECASTER_HOME/bin/env.sh $FORECASTER_HOME/bin/get_staging_files";
+    #print "$results\n";
+    #$results = `$FORECASTER_HOME/bin/env.sh $FORECASTER_HOME/bin/get_staging_files`;
+    #print "$results\n";
+    
+    $results = "$FORECASTER_HOME/bin/env.sh $FORECASTER_HOME/bin/load_staging_file --archive $archive";
+    print "$results\n";
+    $results = `$FORECASTER_HOME/bin/env.sh $FORECASTER_HOME/bin/load_staging_file --archive $archive`;
+    print "$results\n";
+    
+    $results = "$FORECASTER_HOME/bin/env.sh $FORECASTER_HOME/bin/insert_nodes --archive $archive";
+    print "$results\n";
+    $results = `$FORECASTER_HOME/bin/env.sh $FORECASTER_HOME/bin/insert_nodes --archive $archive`;
+    print "$results\n";
+    
+    $results = "$FORECASTER_HOME/bin/env.sh $FORECASTER_HOME/bin/insert_node_names";
+    print "$results\n";
+    $results = `$FORECASTER_HOME/bin/env.sh $FORECASTER_HOME/bin/insert_node_names`;
+    print "$results\n";
+    
+    $results = "$FORECASTER_HOME/bin/env.sh $FORECASTER_HOME/bin/update_archive_table --archive $archive";
+    print "$results\n";
+    $results = `$FORECASTER_HOME/bin/env.sh $FORECASTER_HOME/bin/update_archive_table --archive $archive`;
+    print "$results\n";
+    
+    $results = "$FORECASTER_HOME/bin/env.sh $FORECASTER_HOME/bin/gen_forecasts --db $db --cycles $cycles --cols $cols --base $base $history";
+    print "$results\n";
+    $results = system("$FORECASTER_HOME/bin/env.sh $FORECASTER_HOME/bin/gen_forecasts --db $db --cycles $cycles --cols $cols --base $base $history");
+    print "Error: $!\n" unless ($results==0);
+}
+
+if ( $opt{catchuponly} ) {
+    $results = "$FORECASTER_HOME/bin/env.sh $FORECASTER_HOME/bin/gen_forecasts --db $db --cycles $cycles --cols $cols --base $base --catchuponly";
+    print "$results\n";
+    $results = system("$FORECASTER_HOME/bin/env.sh $FORECASTER_HOME/bin/gen_forecasts --db $db --cycles $cycles --cols $cols --base $base --catchuponly");
+    print "Error: $!\n" unless ($results==0);
+}
