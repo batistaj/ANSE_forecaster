@@ -1,0 +1,84 @@
+#!/usr/bin/perl
+
+# load_staging_file
+
+# A sample script to load new records into the staging files.
+
+# TODO:
+# - Change the input file name
+# - Add data checks
+# - If there is no input, don't attempt to load data.
+# - Make test for input more secure.
+
+
+# Sample usage
+# ./env.sh ./load_staging_file --archive throughput
+
+use strict;
+use warnings;
+
+use Getopt::Long qw(:config bundling);
+use DBI;
+
+use Environment;
+use SQL;
+
+# Handling of command line options
+my %opt=();                             # Options allowed by the code
+GetOptions( \%opt, "archive=s");
+
+# Globals (See also Environment library)
+my $archive   = $opt{archive};
+my $input     = "/$DROP_POINT/$archive";
+my $semaphore = $input . '.semaphore';
+my $REPEAT    = 15;
+
+# Access database
+my $dbh = DBI->connect("dbi:mysql:dbname=$DB_NAME","$DB_USER","$DB_PASSWD",
+                       { AutoCommit => 1, PrintError => 1, RaiseError => 1 });
+
+# Display the most recent
+print "The most recent archives available:\n";
+system("ls -ltr /var/tmp/$archive* | tail -n 4");
+print "\n";
+
+# Access input staging file
+my $try = 1;
+while ( $try <= $REPEAT ) {
+    if ( !-e $semaphore ) {
+        print "Try $try: No input records available from $input\n";
+        $try++;
+        sleep(60);
+    } else {
+        print "File $input is now available and loading into the database.\n";
+        last;
+    }
+}
+if ( $try > $REPEAT ) {
+    print "No input records were found. Continuing...\n";
+}
+
+# Prepare and execute sql
+sleep(20);
+
+if ( -e $input ) {
+    my $lh = $dbh->prepare( load_archive($input,$archive) );
+    $lh->execute;
+    my $dh = $dbh->prepare( delete_from_staging_archive($archive) );
+    $dh->execute;
+
+    print "File $input has now loaded and been deleted.\n";
+    `rm -f $input`;
+    `rm -f $semaphore`;
+}
+
+disconnect($dbh);
+
+# -------------------
+
+sub disconnect {
+    my $dbh = shift;
+
+    $dbh->disconnect();
+    exit(0);
+}
