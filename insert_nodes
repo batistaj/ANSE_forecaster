@@ -1,0 +1,53 @@
+#!/usr/bin/perl
+
+# insert_nodes
+
+# TODO
+# - Use Registry query to obtain archive_id from archive.
+# - Should $row->{node_name} be replaced in $hh->execute with NULL for clarity?
+
+# A simple script to enter nodes into the test database
+# service table from the staging table.
+
+# Sample_usage
+# ./env.sh ./insert_nodes --archive throughput
+
+use strict;
+use warnings;
+
+use Getopt::Long qw(:config bundling);
+use DBI;
+
+use Environment;
+use SQL;
+
+# Handling of command line options
+my %opt=();
+GetOptions( \%opt, "archive=s" );
+
+# Globals (See also Environment library)
+my $archive = $opt{archive};
+
+# Replace with Registry query
+my $archive_id = undef;
+if ( $archive eq 'throughput' ) {
+    $archive_id = 1;
+} else {
+    $archive_id = 0;
+}
+
+# Access database
+my $dbh = DBI->connect("dbi:mysql:dbname=$DB_NAME","$DB_USER","$DB_PASSWD",
+                       { AutoCommit => 1, PrintError => 1, RaiseError => 1 });
+
+my $gh = $dbh->prepare( get_nodes($archive) );
+my $hh = $dbh->prepare( insert_nodes() );
+
+$gh->execute();
+while ( my $row = $gh->fetchrow_hashref() ) {
+    $hh->execute( $row->{node_ip},$row->{node_name},$archive_id );
+    #$hh->execute( $row->{node_ip},'NULL',$archive_id );
+}
+
+$dbh->disconnect();
+exit(0);
