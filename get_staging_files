@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# TODO
+# Generalize to pick different MAs
+
+scp -p root@psum02.local:$LOAD_POINT/throughput $DROP_POINT/throughput
