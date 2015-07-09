@@ -1,0 +1,55 @@
+#!/usr/bin/perl
+
+# This script populates table nodes with missing node names.
+
+# TODO
+# - Check if the same IP can end up with two node names.  -  No. Done.
+# - Make secure
+
+# Sample usage
+# ./env.sh ./insert_node_names
+
+use strict;
+use warnings;
+
+use Getopt::Long qw(:config bundling);
+use DBI;
+
+use Environment;
+use SQL;
+
+# Globals
+my %ids=();
+my %names=();
+
+# Access database
+my $dbh = DBI->connect("dbi:mysql:dbname=$DB_NAME","$DB_USER","$DB_PASSWD",
+                       { AutoCommit => 1, PrintError => 1, RaiseError => 1 });
+
+# Prepare sql
+my $gh = $dbh->prepare( get_unnamed_nodes() );
+my $uh = $dbh->prepare( insert_node_name() );
+
+# Obtain the unnamed nodes
+$gh->execute;
+while( my $row = $gh->fetchrow_hashref() ) {
+    $ids{$row->{node_ip}} = $row->{id}
+}
+
+# Name the nodes
+# If no name is found, use the IP address as the name
+my $node_str = undef;
+my $node_name = undef;
+my @node = undef;
+foreach my $key ( keys %ids ) {
+    $node_str = `host $key`;
+    if ( $node_str =~ m/not found/ ) {
+        $node_name = $key;
+    } else {
+        @node = split(' ', $node_str);
+        $node_name = $node[-1];
+        chop $node_name;
+    }
+    #print "$key -> $node_name\n";
+    $uh->execute( $node_name,$ids{$key} );
+}
