@@ -1,0 +1,147 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+# This is a next generation forecasting output effort
+
+# This script provides a measure of forecasted path throughput.
+# The measure is derived by dividing 1e+6 into the forecast throughput
+# value and rounding to the nearest integer.
+
+# TODO
+# - Integrate database name
+# - Specify forecast name according to the forecast requested
+# - Select the proper query for the specified forecast
+# - Collapse queries into one
+# - See /var/www/html/ma/forecast.php
+
+# Usage:
+# ./forecast --archive throughput --grouping byHour [--JSON | python -mjson.tool]
+
+# Output is a comma-separated list of values representing the source host,
+# the destination host, the forecast throughput index, and a measure of
+# how recent the forecast index was generated. For the same output in JSON
+# format, use the --JSON optional argument.
+
+# Note:
+# A new forecast is not guaranteed to be available for each path for each hour.
+# A "worth" value (wrt) is assigned to each forecast index to provide a sense
+# of how recent the forecast index was generated.
+
+# Worth is measured in hours, with smaller values representing preferred indexes.
+# Indexes represent throughput in MBPS, with larger values being preferred.
+
+
+use Getopt::Long qw(:config bundling);
+use DBI;
+use JSON;
+
+# Handling of command line options
+my %opt=();                             # Options allowed by the code
+GetOptions( \%opt, "archive=s",
+                   "grouping=s",
+                   "JSON"    => \$opt{JSON} );
+
+my $archive  = $opt{archive};
+my $grouping = $opt{grouping};
+
+my $now=time();
+
+# Inner query obtains the max of the lowest id with new=1 and the highest id with new=0.
+# Note: Confirm the case where the record count = $base is not a problem.
+my $sql = undef;
+if ( $grouping eq 'byTime' ) {
+    $sql = "SELECT sh.node_name source, dh.node_name destination, ROUND(f.fcast/1000000) idx, t.time time, 0 grp
+            FROM ets_throughput_byTime f, nodes sh, nodes dh, ets_throughput_byTime_map m, archive_throughput t,
+                 (
+                   SELECT max(id) maxid, min(id) minid, src_id, dst_id
+                   FROM (
+                          SELECT max(id) id, src_id, dst_id
+                          FROM ets_throughput_byTime
+                          WHERE new=0
+                          #and src_id=182 and dst_id=152
+                          GROUP BY src_id,dst_id
+                          UNION
+                          SELECT min(id) id, src_id, dst_id
+                          FROM ets_throughput_byTime
+                          WHERE new=1
+                          #and src_id=182 and dst_id=152
+                          GROUP BY src_id,dst_id
+                        ) v
+                   GROUP BY v.src_id,v.dst_id
+                 ) a
+            WHERE f.src_id=sh.id
+            AND f.dst_id=dh.id
+            AND f.id=a.maxid
+            AND a.minid=m.model_id
+            AND m.archive_id=t.id
+            ORDER BY source, destination;";
+} elsif ( $grouping eq 'byHour' ) {
+    $sql = "SELECT sh.node_name source, dh.node_name destination, ROUND(f.fcast/1000000) idx, t.time time, HOUR(FROM_UNIXTIME(time)) grp
+           FROM ets_throughput_byHour f, nodes sh, nodes dh, ets_throughput_byHour_map m, archive_throughput t,
+                (
+                  SELECT max(id) maxid, min(id) minid, src_id, dst_id
+                  FROM (
+                         SELECT max(id) id, src_id, dst_id
+                         FROM ets_throughput_byHour
+                         WHERE new=0
+                         #and src_id=5 and dst_id=38
+                         GROUP BY src_id,dst_id
+                         UNION
+                         SELECT min(id) id, src_id, dst_id
+                         FROM ets_throughput_byHour
+                         WHERE new=1
+                         #and src_id=5 and dst_id=38
+                         GROUP BY src_id,dst_id
+                       ) v
+                  GROUP BY v.src_id,v.dst_id
+                ) a
+           WHERE f.src_id=sh.id
+           AND f.dst_id=dh.id
+           AND f.id=a.maxid
+           AND a.minid=m.model_id
+           AND m.archive_id=t.id
+           ORDER BY source, destination, grp, time;";
+} else {
+    exit(0);
+}
+
+
+my $DB = 'madCow';
+
+my $dbh = DBI->connect("dbi:mysql:dbname=$DB",
+                       "root","",{ AutoCommit => 1, PrintError => 1, RaiseError => 1 });
+
+# Prepare and execute statement
+my $ih = $dbh->prepare( $sql );
+$ih->execute();
+
+my $worth;
+if ( $opt{JSON} ) {
+    my %tophash;
+    my %jhash;
+    my @rows;
+    my @name = ("name", "Forecast indexes - Archive: $archive - Grouping: $grouping");
+    my $json = JSON->new->allow_nonref;
+    while( my $row = $ih->fetchrow_hashref() ) {
+        $worth = sprintf("%.1f", ($now - $row->{time})/3600);      # Worth is based on hours past. Smaller is better.
+        $jhash{'src'} = $row->{source};
+        $jhash{'dst'} = $row->{destination};
+        $jhash{'idx'} = $row->{idx};                               # Measured in MBPS. Larger is better.
+        $jhash{'wrt'} = $worth;
+        $jhash{'grp'} = $row->{grp};
+        my $json = JSON->new->allow_nonref;
+        my $json_text = $json->encode(\%jhash);
+        push @rows, $json_text;
+    }
+    $tophash{'rows'} = [@rows];
+    $tophash{'name'} = "Forecast indexes - Archive: $archive - Grouping: $grouping";
+    my $json_text = $json->encode(\%tophash);
+    print "$json_text\n";
+} else {
+    while( my $row = $ih->fetchrow_hashref() ) {
+        $worth = sprintf("%.1f", ($now - $row->{time})/3600);      # Worth is based on hours past. Smaller is better.
+        print "$row->{source},$row->{destination},$row->{idx},$worth,$row->{grp}\n";
+    }
+}
