@@ -1,0 +1,77 @@
+#!/usr/bin/perl
+
+# gen_forecasts
+
+# This script is a wrapper for generating forecasts.
+
+# Usage: ./env.sh ./gen_forecasts --db DummyDB --base 10 --cycles 4 --cols 2
+
+# TODO:
+# - Allow display/logging of roll output.
+
+use strict;
+use warnings;
+
+use Getopt::Long qw(:config bundling);
+use DBI;
+
+use Environment;
+use SQL;
+
+$| = 1;
+
+# Handling of command line options
+my %opt=();
+GetOptions( \%opt, "db=s",
+                   "base=i",
+                   "cols=i",
+                   "cycles=i",
+                   "catchuponly" => \$opt{catchuponly},
+                   "catchup"     => \$opt{catchup} );
+
+# Globals (See also Environment library)
+my $db         = $opt{db} || $DB_NAME;
+my $base       = $opt{base};
+my $cols       = $opt{cols};
+my $cycles     = $opt{cycles};
+my $measure    = undef;
+my %measures   = ();
+my $model      = undef;
+my $group_name = undef;
+my $history    = undef;
+
+$history = '--catchuponly' if ( $opt{catchuponly} );
+$history = '--catchup'     if ( $opt{catchup} );
+
+print '_' x 80 . "\n";
+
+# Access database
+my $dbh = DBI->connect("dbi:mysql:dbname=$db","$DB_USER","$DB_PASSWD",
+                       { AutoCommit => 1, PrintError => 1, RaiseError => 1 });
+
+# Prepare statement
+my $sh = $dbh->prepare( get_model_statuses() );
+
+
+# Cycle through all models/archives, calling roll
+$sh->execute();
+while( my $row = $sh->fetchrow_hashref() ) {
+    $model = $row->{model_name};
+    $measure = $row->{archive_name};
+    $measures{$measure}=1;            # Identify archives to mark as processed later
+    $group_name = $row->{group_name};
+    print "$APP_PATH/env.sh $APP_PATH/roll --db $db --base $base --cycles $cycles --cols $cols --measure $measure --model $model --group $group_name $history 2>&1\n";
+    #my $results = `$APP_PATH/env.sh $APP_PATH/roll --db $db --base $base --cycles $cycles --cols $cols --measure $measure --model $model --group $group_name $history 2>&1`;
+    #print "$results\n";
+    my $results = system("$APP_PATH/env.sh $APP_PATH/roll --db $db --base $base --cycles $cycles --cols $cols --measure $measure --model $model --group $group_name $history 2>&1");
+    print "Error: $!\n" unless ($results==0);
+}
+
+# Mark processed records
+foreach my $measure ( keys %measures ) {
+    my $mh = $dbh->prepare( mark_measure_as_processed($measure) );
+    $mh->execute();
+}
+
+# End execution
+$sh->finish();
