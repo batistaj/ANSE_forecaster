@@ -1,0 +1,72 @@
+#!/usr/bin/perl
+
+# update_archive_table
+
+# Sample code to generate the archive records from the staging records.
+
+# TODO - Use Registry query to obtain archive_id from archive.
+
+# Smaple Usage:
+# ./env.sh ./update_archive_table --archive throughput
+
+use strict;
+use warnings;
+
+use Getopt::Long qw(:config bundling);
+use DBI;
+
+use Environment;
+use SQL;
+
+# Handling of command line options
+my %opt=();
+GetOptions( \%opt,
+             "archive=s" );
+
+# Globals (See also Environment library)
+my $archive = $opt{archive};
+
+# Replace with Registry query
+my $archive_id = undef;
+if ( $archive eq 'throughput' ) {
+    $archive_id = 1;
+} else {
+    $archive_id = 0;
+}
+
+my %hostID = ();
+
+# Access database
+my $dbh = DBI->connect("dbi:mysql:dbname=$DB_NAME","$DB_USER","$DB_PASSWD",
+                       { AutoCommit => 1, PrintError => 1, RaiseError => 1 });
+
+# Prepare statements
+my $ih = $dbh->prepare( insert_archive($archive) );
+my $hh = $dbh->prepare( get_archive_nodes($archive_id) );
+my $nh = $dbh->prepare( get_new_staging_records($archive) );
+my $mh = $dbh->prepare( mark_staging_records($archive) );
+
+# Get the list of nodes
+$hh->execute();
+while( my $row = $hh->fetchrow_hashref() ) {
+    $hostID{ $row->{node_ip} } = $row->{id};
+}
+
+# Get new records
+$nh->execute();
+
+# Insert records into archive table
+while( my $row = $nh->fetchrow_hashref() ) {
+    $row->{measure} += 0;      # Ensures numeric value (nulls are set to 0)
+    #$row->{measure} = 0.1 if ( $row->{measure} <= 0 );  ### Model doesn't handle 0 or lower values. Check
+    $ih->execute( $row->{id},
+                  $row->{time},
+                  $hostID{ $row->{mon_ip} },
+                  $hostID{ $row->{src_ip} },
+                  $hostID{ $row->{dst_ip} },
+                  $row->{measure},
+                  $row->{mkey} );
+}
+
+# Mark records as transferred
+$mh->execute();
