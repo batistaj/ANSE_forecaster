@@ -1,0 +1,490 @@
+#!/usr/bin/perl
+
+# registry
+
+# A script to update the forecast registry.
+
+# Usage
+# ./env.sh ./registry --create_registry DummyDB
+# ./env.sh ./registry --use DummyDB --add_archive throughput
+# ./env.sh ./registry --use DummyDB --add_group byTime --clause 0 --time_block 0
+# ./env.sh ./registry --use DummyDB --add_group byHour --clause "HOUR(FROM_UNIXTIME(time))" --time_block 2
+# ./env.sh ./registry --use DummyDB --add_model ets --use_archive throughput --use_group byTime --Enabled --ranking 4
+# ./env.sh ./registry --use DummyDB --add_model ets --use_archive throughput --use_group byHour --Enabled --ranking 2
+
+# TODO:
+# - Have model_exists check model_registry entry
+# - Add code_path fields to model_registry?
+# - Add drop model_registry with embedded drop models?
+# - Add comments
+# - Add constraint and error handling code
+# - Add help
+# - Complete cleanup functions
+# - Check "Fix" comment below. Does this prevent status from working generically?
+# - Change hard-wired inserts (like those for status) to "LOAD"?
+
+use strict;
+use warnings;
+
+use Getopt::Long qw(:config bundling);
+use DBI;
+
+use Environment;
+use SQL;
+
+# Handling of command line options
+my %opt=();
+GetOptions( \%opt, "create_registry=s",    # creates tables nodes, edges, groups_registry, models_registry, archives_registry, status
+                   "use=s",
+                   "add_archive=s",
+                   "add_group=s",
+                   "add_model=s",
+                   "check_model=s",
+                   "clause=s",
+                   "drop_model=s",
+                   "model=s",
+                   "Enabled",
+                   "Disabled",
+                   "ranking=i",
+                   "time_block=s",
+                   "use_archive=s",
+                   "use_group=s");
+
+# Globals (See also Environment library)
+my $db_name = $opt{create_registry} || $opt{use};
+my $model_name = $opt{model} || $opt{add_model} || $opt{check_model} || $opt{drop_model};
+my $archive_name = $opt{add_archive} || $opt{use_archive};
+my $group_name = $opt{add_group} || $opt{use_group};
+my $clause = $opt{clause};
+my $time_block = $opt{time_block};
+my $status = undef;
+if ($opt{Enabled}) {
+    $status = 'Enabled';
+} else {
+    $status = 'Disabled';
+}
+my $ranking = $opt{ranking};
+
+# First access a database known to exist. Switch to the desired database later.
+my $dbh = DBI->connect("dbi:mysql:dbname=mysql","$DB_USER","$DB_PASSWD",
+                       { AutoCommit => 1, PrintError => 1, RaiseError => 1 });
+
+
+# Main tasks. Only one is performed per run.
+if ( $opt{check_model} ) {
+    if ( model_exists($model_name) ) {
+        print "Model $model_name exists.\n";
+        print "ToDo: Display $model_name registry values here.\n";
+    } else {
+        print "Model $model_name does not exist.\n";
+    }
+    disconnect($dbh);
+}
+
+
+if ( $opt{add_archive} ) {
+    create_archive($archive_name);
+    disconnect($dbh);
+}
+
+
+if ( $opt{add_group} ) {
+    insert_group($group_name,$clause,$time_block);
+    disconnect($dbh);
+}
+
+
+if ( $opt{add_model} ) {
+    add_model($model_name,$archive_name,$group_name,$status,$ranking);
+    disconnect($dbh);
+}
+
+
+if ( $opt{create_registry} ) {
+    my $bh = $dbh->prepare( create_db($db_name) );
+    my $uh = $dbh->prepare( use_db($db_name) );
+    my $nh = $dbh->prepare( create_nodes() );
+    my $eh = $dbh->prepare( create_edges() );
+    my $gh = $dbh->prepare( create_groups_registry() );
+    my $mh = $dbh->prepare( create_models_registry() );
+    my $rh = $dbh->prepare( create_archives_registry() );
+
+    $bh->execute();
+    $uh->execute();
+    $nh->execute();
+    $eh->execute();
+    $gh->execute();
+    $mh->execute();
+    $rh->execute();
+
+    create_status();
+    disconnect($dbh);
+}
+
+
+if ( $opt{drop_model} ) {
+    drop_model($model_name);
+    disconnect($dbh);
+}
+
+
+
+#---
+
+sub disconnect {
+    my $dbh = shift;
+
+    $dbh->disconnect();
+    exit(0);
+}
+
+
+sub get_status {
+    my $sql = "SELECT id,status FROM status;";
+
+    return $sql;
+}
+
+# ______________________________________________
+#
+# Creation of database and foundational tables;
+
+sub create_db {
+    my $sql = "CREATE DATABASE $db_name;";
+    return $sql;
+}
+
+
+sub use_db {
+    my $sql = "USE $db_name;";
+    return $sql;
+}
+
+
+sub create_nodes {
+    my $sql = "CREATE TABLE $db_name.nodes (
+      id int unsigned NOT NULL AUTO_INCREMENT,
+      node_ip   varchar(50) NOT NULL,
+      node_name varchar(50) DEFAULT NULL,
+      archive_id tinyint unsigned NOT NULL,
+      PRIMARY KEY (id),
+      UNIQUE KEY nidx (node_ip,archive_id)
+    ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=latin1;";
+
+    return $sql;
+}
+
+
+sub create_edges {
+    my $sql = "CREATE TABLE $db_name.edges (
+      id int unsigned NOT NULL AUTO_INCREMENT,
+      src_id smallint unsigned NOT NULL,
+      dst_id smallint unsigned NOT NULL,
+      archive_id tinyint unsigned NOT NULL,
+      status_id tinyint unsigned NOT NULL,
+      PRIMARY KEY (id),
+      UNIQUE KEY pidx (src_id,dst_id,archive_id,status_id)
+    ) ENGINE=MyISAM AUTO_INCREMENT=1 DEFAULT CHARSET=latin1;";
+
+    return $sql;
+}
+
+
+sub create_groups_registry {
+    my $sql = "CREATE TABLE $db_name.groups_registry (
+      id tinyint unsigned NOT NULL AUTO_INCREMENT,
+      group_name varchar(20) NOT NULL,
+      clause varchar(40) NOT NULL,
+      time_block tinyint unsigned NOT NULL,
+      PRIMARY KEY (id),
+      UNIQUE KEY gidx (group_name)
+    ) ENGINE=MyISAM AUTO_INCREMENT=1 DEFAULT CHARSET=latin1;";
+
+    return $sql;
+}
+
+
+sub create_models_registry {
+    my $sql = "CREATE TABLE $db_name.models_registry (
+                   id tinyint unsigned  NOT NULL AUTO_INCREMENT,
+                   model_name varchar(20) NOT NULL,
+                   archive_id tinyint unsigned NOT NULL,
+                   group_id tinyint unsigned NOT NULL,
+                   status_id tinyint unsigned NOT NULL,
+                   ranking tinyint unsigned NOT NULL,
+                   PRIMARY KEY (id),
+                   UNIQUE KEY model_idx (model_name,archive_id,group_id)
+               ) ENGINE=MyISAM AUTO_INCREMENT=1 DEFAULT CHARSET=latin1;";
+
+    return $sql;
+}
+
+
+sub create_archives_registry {
+    my $sql = "CREATE TABLE $db_name.archives_registry (
+                   id tinyint unsigned NOT NULL AUTO_INCREMENT,
+                   archive_name varchar(20) NOT NULL,
+                   status_id tinyint unsigned NOT NULL,
+                   PRIMARY KEY (id),
+                   UNIQUE KEY archive_idx (archive_name)
+               ) ENGINE=MyISAM AUTO_INCREMENT=1 DEFAULT CHARSET=latin1;";
+
+    return $sql;
+}
+
+
+sub create_status {
+    my $sql = "CREATE TABLE status (
+                   id tinyint unsigned NOT NULL AUTO_INCREMENT,
+                   status varchar(15) NOT NULL,
+                   PRIMARY KEY (id),
+                   UNIQUE KEY sidx (status)
+               ) ENGINE=MyISAM AUTO_INCREMENT=1 DEFAULT CHARSET=latin1;";
+
+    my $sh = $dbh->prepare( $sql );
+    $sh->execute();
+
+    # Populate status
+    $sql = "INSERT IGNORE INTO $db_name.status
+            (status)
+            VALUES ('Enabled')";
+    $sh = $dbh->prepare( $sql );
+    $sh->execute();
+
+    $sql = "INSERT IGNORE INTO $db_name.status
+            (status)
+            VALUES ('Disabled')";
+    $sh = $dbh->prepare( $sql );
+    $sh->execute();
+
+    $sql = "INSERT IGNORE INTO $db_name.status
+            (status)
+            VALUES ('Copy in Progress')";
+    $sh = $dbh->prepare( $sql );
+    $sh->execute();
+
+    $sql = "INSERT IGNORE INTO $db_name.status
+            (status)
+            VALUES ('Copy Failed')";
+    $sh = $dbh->prepare( $sql );
+    $sh->execute();
+
+    $sql = "INSERT IGNORE INTO $db_name.status
+            (status)
+            VALUES ('Copy Successful')";
+    $sh = $dbh->prepare( $sql );
+    $sh->execute();
+
+    $sql = "INSERT IGNORE INTO $db_name.status
+            (status)
+            VALUES ('Load in Progress')";
+    $sh = $dbh->prepare( $sql );
+    $sh->execute();
+
+    $sql = "INSERT IGNORE INTO $db_name.status
+            (status)
+            VALUES ('Load Failed')";
+    $sh = $dbh->prepare( $sql );
+    $sh->execute();
+
+    $sql = "INSERT IGNORE INTO $db_name.status
+            (status)
+            VALUES ('Load Successful')";
+    $sh = $dbh->prepare( $sql );
+    $sh->execute();
+}
+
+
+# ______________________________________________
+#
+# Creation of archive and model tables
+
+sub create_archive {
+    my ($archive_name) = @_;
+
+    # Staging table
+    my $sql = "CREATE TABLE $db_name.staging_$archive_name (
+               id int unsigned NOT NULL AUTO_INCREMENT,
+               time int unsigned NOT NULL,
+               mon_ip varchar(50) NOT NULL,
+               src_ip varchar(50) NOT NULL,
+               dst_ip varchar(50) NOT NULL,
+               measure float unsigned DEFAULT NULL,
+               mkey   varchar(50) NOT NULL,
+               new tinyint unsigned DEFAULT '1',
+               PRIMARY KEY (id),
+               UNIQUE KEY sidx (time,mon_ip,src_ip,dst_ip,mkey)
+             ) ENGINE=MyISAM AUTO_INCREMENT=1 DEFAULT CHARSET=latin1;";
+    my $ah = $dbh->prepare( $sql );
+    $ah->execute();
+
+    # Archive table
+    $sql = "CREATE TABLE $db_name.archive_$archive_name (
+            id int unsigned NOT NULL AUTO_INCREMENT,
+            time int unsigned NOT NULL,
+            mon_id smallint unsigned NOT NULL,
+            src_id smallint unsigned NOT NULL,
+            dst_id smallint unsigned NOT NULL,
+            measure float unsigned DEFAULT NULL,
+            mkey   varchar(50) NOT NULL,
+            new tinyint unsigned DEFAULT '0',
+            PRIMARY KEY (id),
+            UNIQUE KEY measidx (time,mon_id,src_id,dst_id,mkey),
+            KEY tidx (time),
+            KEY sidx (src_id),
+            KEY didx (dst_id),
+            KEY kidx (mkey)
+          ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=latin1;";
+    $ah = $dbh->prepare( $sql );
+    $ah->execute();
+
+    # Populate archives_registry
+    $sql = "INSERT IGNORE INTO $db_name.archives_registry
+            (archive_name,status_id)
+            VALUES ('$archive_name',1);";
+    $ah = $dbh->prepare( $sql );
+    $ah->execute();
+}
+
+
+sub insert_group {
+    my ($group_name,$clause,$time_block) = @_;
+
+    my $sql = "INSERT IGNORE INTO $db_name.groups_registry
+               (group_name,clause,time_block)
+               VALUES ('$group_name','$clause','$time_block');";
+    my $gh = $dbh->prepare( $sql );
+    $gh->execute();
+}
+
+
+sub add_model {
+    my ($model_name,$archive_name,$group_name,$status,$ranking) = @_;
+
+    my $model = $model_name . '_' . $archive_name . '_' . $group_name;
+    my $sql = "CREATE TABLE $db_name.$model (
+               id int unsigned NOT NULL AUTO_INCREMENT,
+               fcast float unsigned DEFAULT NULL,
+               src_id smallint unsigned NOT NULL,
+               dst_id smallint unsigned NOT NULL,
+               last_time int unsigned DEFAULT NULL,
+               grouping tinyint unsigned DEFAULT NULL,
+               new tinyint unsigned DEFAULT NULL,
+               base tinyint unsigned DEFAULT NULL,
+               sequence tinyint unsigned DEFAULT NULL,
+               PRIMARY KEY (id),
+               KEY sid (src_id),
+               KEY did (dst_id),
+               KEY gid (grouping),
+               KEY nidx (new)
+             ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=latin1;";
+    my $ah = $dbh->prepare( $sql );
+    $ah->execute();
+
+    my $model_map = $model . '_map';
+    $sql = "CREATE TABLE $db_name.$model_map (
+            id int unsigned NOT NULL AUTO_INCREMENT,
+            archive_id int unsigned NOT NULL,
+            model_id int unsigned NOT NULL,
+            PRIMARY KEY (id),
+            UNIQUE KEY mapidx (archive_id,model_id),
+            KEY aidx (archive_id),
+            KEY midx (model_id)
+          ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=latin1;";
+    $ah = $dbh->prepare( $sql );
+    $ah->execute();
+
+    # Fix this:
+    $sql = "SELECT id FROM $db_name.status WHERE status='$status';";
+    $ah = $dbh->prepare( $sql );
+    $ah->execute();
+    my $status_id = undef;
+    while( my $row = $ah->fetchrow_hashref() ) {
+        $status_id = $row->{id};
+    }
+
+    $sql = "SELECT id FROM $db_name.groups_registry WHERE group_name='$group_name';";
+    $ah = $dbh->prepare( $sql );
+    $ah->execute();
+    my $group_id = undef;
+    while( my $row = $ah->fetchrow_hashref() ) {
+        $group_id = $row->{id};
+    }
+
+    $sql = "SELECT id FROM $db_name.archives_registry WHERE archive_name='$archive_name';";
+    $ah = $dbh->prepare( $sql );
+    $ah->execute();
+    my $archive_id = undef;
+    while( my $row = $ah->fetchrow_hashref() ) {
+        $archive_id = $row->{id};
+    }
+
+    $sql = "INSERT IGNORE INTO $db_name.models_registry
+               (model_name,archive_id,group_id,status_id,ranking)
+               VALUES ('$model_name',$archive_id,$group_id,$status_id,$ranking);";
+    $ah = $dbh->prepare( $sql );
+    $ah->execute();
+}
+
+
+# ______________________________________________
+#
+# Cleanup functions
+
+sub drop_model {
+    my $model = shift;
+
+    my $dh = $dbh->prepare( drop_model_table($model) );
+    $dh->execute();
+    $dh = $dbh->prepare( drop_model_table($model . '_map') );
+    $dh->execute();
+    $dh = $dbh->prepare( deregister_model($model) );
+    $dh->execute();
+}
+
+
+sub model_exists {
+    my $name = shift;
+
+    my $set = 0;
+    my $ch = $dbh->prepare( check_model( $name ) );
+    $ch->execute();
+    my @model = $ch->fetchrow_array();
+    if ( defined($model[0]) && ($model[0] eq $name) ) {
+        $set++;
+    }
+
+    my $map = $name . '_map';
+    $ch = $dbh->prepare( check_model( $map ) );
+    $ch->execute();
+    @model = $ch->fetchrow_array();
+    if ( defined($model[0]) && ($model[0] eq $map) ) {
+        $set++;
+    }
+
+    if ( $set == 2 ) {
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+sub check_model {
+    my $model = shift;
+
+    return "SHOW TABLES LIKE '$model';";
+}
+
+
+sub drop_model_table {
+    my $table = shift;
+
+    return "DROP TABLE $table;";
+}
+
+
+sub deregister_model {
+    my $name = shift;
+
+    return "DELETE FROM model_registry WHERE model_name = '$name';";
+}
